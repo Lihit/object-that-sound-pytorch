@@ -1,7 +1,7 @@
 ##  说明
 主要参考代码：https://github.com/rohitrango/objects-that-sound 和 https://github.com/hangzhaomit/Sound-of-Pixels
 
-论文：![objects-that-sound](https://arxiv.org/pdf/1712.06651.pdf) 和 ![Sound-of-Pixels](https://arxiv.org/abs/1804.03160)
+论文：[objects-that-sound](https://arxiv.org/pdf/1712.06651.pdf) 和 [Sound-of-Pixels](https://arxiv.org/abs/1804.03160)
 ### 数据准备
 * 下载数据，该论文使用的是AudioSet这个数据集，但是这个数据集只提供youtube的video id，需要自己去下载，在`./data/`目录里我提供了下载
 的脚本`download_video_audio.py`,但是需要梯子（你懂的）。建议先将所有的数据下载，然后再根据自己的需求划分，训练集videoid文件对应是
