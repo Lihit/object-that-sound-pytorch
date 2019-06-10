@@ -196,8 +196,8 @@ class AudioSetDatasetTrain(Dataset):
         # audio = self._load_audio(audio_file_path, time)
         # spectrogram, _ = self._stft(audio)
         rate, samples = wav.read(audio_file_path)
-        start = int(time * self.audRate) - self.audLen//2
-        end = int(time * self.audRate) + self.audLen//2
+        start = int(time * self.audRate) - self.audLen // 2
+        end = int(time * self.audRate) + self.audLen // 2
         samples = samples[start:end]
         frequencies, times, spectrogram = signal.spectrogram(samples, self.audRate, nperseg=512, noverlap=274)
         # Remove bad examples
@@ -237,10 +237,10 @@ class AudioSetDatasetVal(Dataset):
         # the origin code sample all the frames in one video, i.e. self.frame_sample_s = 1
         self.frame_sample_s = self.config.data.frame_sample_s
         # Frames per video
-        self.fpv = 1 + self.fps * (self.time - 1) // self.frame_sample_s
+        self.fpv = 1
         # total frames of all the videos
         self.tot_frames = len(self.vid2genre) * self.fpv
-        self.length = 2 * self.tot_frames
+        self.length = self.tot_frames
 
         # STFT params
         self.audRate = self.config.data.audRate
@@ -336,39 +336,16 @@ class AudioSetDatasetVal(Dataset):
 
     def __getitem__(self, idx):
         # Positive examples
-        if idx < self.length / 2:
-            result = [0]
-            video_idx = int(idx / self.fpv)
-            video_frame_number = idx % self.fpv
-            frame_time = 500 + (video_frame_number * 1000 * self.frame_sample_s / self.fps)
-
-            audio_file_path = os.path.join(self.audio_path, self.audio_files[video_idx] + '.wav')
-            # Extract relevant audio file
-            time = frame_time / 1000.0
-            # Get video ID
-            videoID = self.video_files[video_idx]
-            vidClasses = self.vid2genre[videoID]
-
-        # Negative examples
-        else:
-            result = [1]
-            video_idx = int((idx - self.length / 2) / self.fpv)
-            video_frame_number = (idx - self.length / 2) % self.fpv
-            frame_time = 500 + (video_frame_number * 1000 * self.frame_sample_s / self.fps)
-
-            # the original code sample the nagative audio according to the rest of the selected
-            # video class, which i think is wrong, this is a self-supervised learning, we should not
-            # sample the data by the class label, just randomly pick one
-            random_audio_idx = (video_idx + random.randint(1, len(self.audio_files) - 1)) % len(self.audio_files)
-            randomAudioID = self.audio_files[random_audio_idx]
-
-            # Read the audio now
-            audio_file_path = os.path.join(self.audio_path, randomAudioID + '.wav')
-            time = (500 + (np.random.randint(self.fpv) * self.frame_sample_s * 1000 / self.fps)) / 1000.0
-
-            # Get video ID
-            videoID = self.video_files[video_idx]
-            vidClasses = self.vid2genre[videoID]
+        result = [0]
+        video_idx = int(idx / self.fpv)
+        video_frame_number = idx % self.fpv
+        frame_time = (self.time / 2) * 1000.0
+        audio_file_path = os.path.join(self.audio_path, self.audio_files[video_idx] + '.wav')
+        # Extract relevant audio file
+        time = frame_time / 1000.0
+        # Get video ID
+        videoID = self.video_files[video_idx]
+        vidClasses = self.vid2genre[videoID]
 
         # Extract relevant frame
         #########################
@@ -428,7 +405,7 @@ class AudioSetDatasetTest(Dataset):
         # the origin code sample all the frames in one video, i.e. self.frame_sample_s = 1
         self.frame_sample_s = self.config.data.frame_sample_s
         # Frames per video
-        self.fpv = 1 + self.fps * (self.time - 1) // self.frame_sample_s
+        self.fpv = 1
         # total frames of all the videos
         self.tot_frames = len(self.vid2genre) * self.fpv
         self.length = self.tot_frames
@@ -534,7 +511,7 @@ class AudioSetDatasetTest(Dataset):
         result = [0]
         video_idx = int(idx / self.fpv)
         video_frame_number = idx % self.fpv
-        frame_time = 500 + (video_frame_number * 1000 * self.frame_sample_s / self.fps)
+        frame_time = (self.time / 2) * 1000.0
         audio_file_path = os.path.join(self.audio_path, self.audio_files[video_idx] + '.wav')
         # Extract relevant audio file
         time = frame_time / 1000.0
