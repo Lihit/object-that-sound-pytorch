@@ -7,12 +7,14 @@ from scipy import signal
 import matplotlib.pyplot as plt
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
-from torchvision.transforms import Compose, Normalize, ToTensor
+import torchvision.transforms as transforms
 from PIL import Image
 import random
 import copy
-
-from . import video_transforms as vtransforms
+# import torchaudio
+import librosa
+from scipy.io import wavfile
+import math
 
 
 class AudioSetDatasetTrain(Dataset):
@@ -30,6 +32,7 @@ class AudioSetDatasetTrain(Dataset):
         with open(self.vid2genreFile, 'r') as fin:
             self.vid2genre = json.load(fin)
         self.audio_files = self.video_files = list(self.vid2genre.keys())
+        self.imgSize = self.config.data.imgSize
         self.fps = self.config.data.fps
         self.time = self.config.data.v_time
         # the origin code sample all the frames in one video, i.e. self.frame_sample_s = 1
@@ -40,6 +43,15 @@ class AudioSetDatasetTrain(Dataset):
         self.tot_frames = len(self.vid2genre) * self.fpv
         self.length = 2 * self.tot_frames
 
+        # STFT params
+        self.audRate = self.config.data.audRate
+        self.audLen = self.config.data.audLen
+        self.audSec = 1. * self.audLen / self.audRate
+        self.stft_frame = self.config.data.stft_frame
+        self.stft_hop = self.config.data.stft_hop
+        self.HS = self.config.data.AudH
+        self.WS = self.config.data.AudW
+
         self._vid_transform = self.get_video_transform()
         self._aud_transform = self.get_audio_transform
 
@@ -47,13 +59,13 @@ class AudioSetDatasetTrain(Dataset):
         transform_list = []
         mean = [0.485, 0.456, 0.406]
         std = [0.229, 0.224, 0.225]
+        transform_list.append(transforms.ToPILImage())
+        transform_list.append(transforms.Resize(int(self.config.data.imgSize * 1.1), Image.BICUBIC))
+        transform_list.append(transforms.RandomCrop(self.config.data.imgSize))
+        transform_list.append(transforms.RandomHorizontalFlip())
 
-        transform_list.append(vtransforms.Resize(int(self.config.data.imgSize * 1.1), Image.BICUBIC))
-        transform_list.append(vtransforms.RandomCrop(self.config.data.imgSize))
-        transform_list.append(vtransforms.RandomHorizontalFlip())
-
-        transform_list.append(vtransforms.ToTensor())
-        transform_list.append(vtransforms.Normalize(mean, std))
+        transform_list.append(transforms.ToTensor())
+        transform_list.append(transforms.Normalize(mean, std))
         vid_transform = transforms.Compose(transform_list)
         return vid_transform
 
@@ -64,12 +76,73 @@ class AudioSetDatasetTrain(Dataset):
         :return: audio out
         """
         scale = random.random() + 0.5  # 0.5-1.5
-        audio *= scale
+        audio = scale * audio
         return audio
 
     def __len__(self):
         # Consider all positive and negative examples
         return self.length
+
+    def _load_audio_file(self, path):
+        if path.endswith('.mp3'):
+            # audio_raw, rate = torchaudio.load(path)
+            # audio_raw = audio_raw.numpy().astype(np.float32)
+            #
+            # # range to [-1, 1]
+            # audio_raw *= (2.0 ** -31)
+            #
+            # # convert to mono
+            # if audio_raw.shape[1] == 2:
+            #     audio_raw = (audio_raw[:, 0] + audio_raw[:, 1]) / 2
+            # else:
+            #     audio_raw = audio_raw[:, 0]
+            audio_raw, rate = librosa.load(path, sr=None, mono=True)
+        else:
+            audio_raw, rate = librosa.load(path, sr=None, mono=True)
+            # rate1, audio_raw1 = wavfile.read(path)
+
+        return audio_raw, rate
+
+    def _load_audio(self, path, center_timestamp, nearest_resample=False):
+        audio = np.zeros(self.audLen, dtype=np.float32)
+        # load audio
+        audio_raw, rate = self._load_audio_file(path)
+
+        # repeat if audio is too short
+        if audio_raw.shape[0] < rate * self.audSec:
+            n = int(rate * self.audSec / audio_raw.shape[0]) + 1
+            audio_raw = np.tile(audio_raw, n)
+
+        # resample
+        if rate > self.audRate:
+            # print('resmaple {}->{}'.format(rate, self.audRate))
+            if nearest_resample:
+                audio_raw = audio_raw[::rate // self.audRate]
+            else:
+                audio_raw = librosa.resample(audio_raw, rate, self.audRate)
+
+        # crop N seconds
+        len_raw = audio_raw.shape[0]
+        center = int(center_timestamp * self.audRate)
+        start = max(0, center - self.audLen // 2)
+        end = min(len_raw, center + self.audLen // 2)
+
+        audio[self.audLen // 2 - (center - start): self.audLen // 2 + (end - center)] = \
+            audio_raw[start:end]
+
+        # randomize volume
+        audio = self._aud_transform(audio)
+        audio[audio > 1.] = 1.
+        audio[audio < -1.] = -1.
+
+        return audio
+
+    def _stft(self, audio):
+        spec = librosa.stft(
+            audio, n_fft=self.stft_frame, hop_length=self.stft_hop)
+        amp = np.abs(spec)
+        phase = np.angle(spec)
+        return torch.from_numpy(amp), torch.from_numpy(phase)
 
     def __getitem__(self, idx):
         # Positive examples
@@ -79,7 +152,7 @@ class AudioSetDatasetTrain(Dataset):
             video_frame_number = idx % self.fpv
             frame_time = 500 + (video_frame_number * 1000 * self.frame_sample_s / self.fps)
 
-            rate, samples = wav.read(os.path.join(self.audio_path, self.audio_files[video_idx] + '.wav'))
+            audio_file_path = os.path.join(self.audio_path, self.audio_files[video_idx] + '.wav')
             # Extract relevant audio file
             time = frame_time / 1000.0
             # Get video ID
@@ -100,7 +173,7 @@ class AudioSetDatasetTrain(Dataset):
             randomAudioID = self.audio_files[random_audio_idx]
 
             # Read the audio now
-            rate, samples = wav.read(os.path.join(self.audio_path, randomAudioID + '.wav'))
+            audio_file_path = os.path.join(self.audio_path, randomAudioID + '.wav')
             time = (500 + (np.random.randint(self.fpv) * self.frame_sample_s * 1000 / self.fps)) / 1000.0
 
             # Get video ID
@@ -114,25 +187,24 @@ class AudioSetDatasetTrain(Dataset):
         success, image = vidcap.read()
         # Some problem with image, return some random stuff
         if image is None:
-            ret_dict = {'image': torch.Tensor(np.random.rand(3, 224, 224)), 'audio': torch.Tensor(
-                np.random.rand(1, 257, 200)), 'target': torch.LongTensor([2])}
+            ret_dict = {'image': torch.Tensor(np.random.rand(3, self.imgSize, self.imgSize)), 'audio': torch.Tensor(
+                np.random.rand(1, self.HS, self.WS)), 'target': torch.LongTensor([2])}
             return ret_dict
         ##############################
-        # Bring the channel to front
-        image = image.transpose(2, 0, 1)
-        image = self._vid_transform(torch.Tensor(image))
+        image = self._vid_transform(image)
         # select 1 sec
-        start = int(time * 48000) - 24000
-        end = int(time * 48000) + 24000
+        # audio = self._load_audio(audio_file_path, time)
+        # spectrogram, _ = self._stft(audio)
+        rate, samples = wav.read(audio_file_path)
+        start = int(time * self.audRate) - self.audLen//2
+        end = int(time * self.audRate) + self.audLen//2
         samples = samples[start:end]
-        samples = self._aud_transform(samples)
-        frequencies, times, spectrogram = signal.spectrogram(samples, self.config.data.sampleRate, nperseg=512,
-                                                             noverlap=274)
-
+        frequencies, times, spectrogram = signal.spectrogram(samples, self.audRate, nperseg=512, noverlap=274)
         # Remove bad examples
-        if spectrogram.shape != (257, 200):
-            return torch.Tensor(np.random.rand(3, 224, 224)), torch.Tensor(
-                np.random.rand(1, 257, 200)), torch.LongTensor([2])
+        if spectrogram.shape != (self.HS, self.WS):
+            ret_dict = {'image': torch.Tensor(np.random.rand(3, self.imgSize, self.imgSize)), 'audio': torch.Tensor(
+                np.random.rand(1, self.HS, self.WS)), 'target': torch.LongTensor([2])}
+            return ret_dict
 
         # Audio
         spectrogram = np.log(spectrogram + 1e-7)
@@ -146,7 +218,7 @@ class AudioSetDatasetTrain(Dataset):
 
 class AudioSetDatasetVal(Dataset):
     """
-    AudioSet for Validation
+    AudioSet for Train
     """
 
     def __init__(self, config):
@@ -159,6 +231,7 @@ class AudioSetDatasetVal(Dataset):
         with open(self.vid2genreFile, 'r') as fin:
             self.vid2genre = json.load(fin)
         self.audio_files = self.video_files = list(self.vid2genre.keys())
+        self.imgSize = self.config.data.imgSize
         self.fps = self.config.data.fps
         self.time = self.config.data.v_time
         # the origin code sample all the frames in one video, i.e. self.frame_sample_s = 1
@@ -167,7 +240,16 @@ class AudioSetDatasetVal(Dataset):
         self.fpv = 1 + self.fps * (self.time - 1) // self.frame_sample_s
         # total frames of all the videos
         self.tot_frames = len(self.vid2genre) * self.fpv
-        self.length = self.tot_frames * 2
+        self.length = 2 * self.tot_frames
+
+        # STFT params
+        self.audRate = self.config.data.audRate
+        self.audLen = self.config.data.audLen
+        self.audSec = 1. * self.audLen / self.audRate
+        self.stft_frame = self.config.data.stft_frame
+        self.stft_hop = self.config.data.stft_hop
+        self.HS = self.config.data.AudH
+        self.WS = self.config.data.AudW
 
         self._vid_transform = self.get_video_transform()
         self._aud_transform = self.get_audio_transform
@@ -176,26 +258,81 @@ class AudioSetDatasetVal(Dataset):
         transform_list = []
         mean = [0.485, 0.456, 0.406]
         std = [0.229, 0.224, 0.225]
+        transform_list.append(transforms.ToPILImage())
+        transform_list.append(transforms.Resize(self.config.data.imgSize, Image.BICUBIC))
+        transform_list.append(transforms.CenterCrop(self.config.data.imgSize))
 
-        transform_list.append(vtransforms.Resize(self.config.data.imgSize, Image.BICUBIC))
-        transform_list.append(vtransforms.CenterCrop(self.config.data.imgSize))
-
-        transform_list.append(vtransforms.ToTensor())
-        transform_list.append(vtransforms.Normalize(mean, std))
+        transform_list.append(transforms.ToTensor())
+        transform_list.append(transforms.Normalize(mean, std))
         vid_transform = transforms.Compose(transform_list)
         return vid_transform
 
     def get_audio_transform(self, audio):
-        """
-        transform the audio, just scale the volume of the audio
-        :param audio: audio in
-        :return: audio out
-        """
         return audio
 
     def __len__(self):
         # Consider all positive and negative examples
         return self.length
+
+    def _load_audio_file(self, path):
+        if path.endswith('.mp3'):
+            # audio_raw, rate = torchaudio.load(path)
+            # audio_raw = audio_raw.numpy().astype(np.float32)
+            #
+            # # range to [-1, 1]
+            # audio_raw *= (2.0 ** -31)
+            #
+            # # convert to mono
+            # if audio_raw.shape[1] == 2:
+            #     audio_raw = (audio_raw[:, 0] + audio_raw[:, 1]) / 2
+            # else:
+            #     audio_raw = audio_raw[:, 0]
+            audio_raw, rate = librosa.load(path, sr=None, mono=True)
+        else:
+            audio_raw, rate = librosa.load(path, sr=None, mono=True)
+
+        return audio_raw, rate
+
+    def _load_audio(self, path, center_timestamp, nearest_resample=False):
+        audio = np.zeros(self.audLen, dtype=np.float32)
+        # load audio
+        audio_raw, rate = self._load_audio_file(path)
+
+        # repeat if audio is too short
+        if audio_raw.shape[0] < rate * self.audSec:
+            n = int(rate * self.audSec / audio_raw.shape[0]) + 1
+            audio_raw = np.tile(audio_raw, n)
+
+        # resample
+        if rate > self.audRate:
+            # print('resmaple {}->{}'.format(rate, self.audRate))
+            if nearest_resample:
+                audio_raw = audio_raw[::rate // self.audRate]
+            else:
+                audio_raw = librosa.resample(audio_raw, rate, self.audRate)
+
+        # crop N seconds
+        len_raw = audio_raw.shape[0]
+        center = int(center_timestamp * self.audRate)
+        start = max(0, center - self.audLen // 2)
+        end = min(len_raw, center + self.audLen // 2)
+
+        audio[self.audLen // 2 - (center - start): self.audLen // 2 + (end - center)] = \
+            audio_raw[start:end]
+
+        # randomize volume
+        audio = self._aud_transform(audio)
+        audio[audio > 1.] = 1.
+        audio[audio < -1.] = -1.
+
+        return audio
+
+    def _stft(self, audio):
+        spec = librosa.stft(
+            audio, n_fft=self.stft_frame, hop_length=self.stft_hop)
+        amp = np.abs(spec)
+        phase = np.angle(spec)
+        return torch.from_numpy(amp), torch.from_numpy(phase)
 
     def __getitem__(self, idx):
         # Positive examples
@@ -205,7 +342,7 @@ class AudioSetDatasetVal(Dataset):
             video_frame_number = idx % self.fpv
             frame_time = 500 + (video_frame_number * 1000 * self.frame_sample_s / self.fps)
 
-            rate, samples = wav.read(os.path.join(self.audio_path, self.audio_files[video_idx] + '.wav'))
+            audio_file_path = os.path.join(self.audio_path, self.audio_files[video_idx] + '.wav')
             # Extract relevant audio file
             time = frame_time / 1000.0
             # Get video ID
@@ -226,7 +363,7 @@ class AudioSetDatasetVal(Dataset):
             randomAudioID = self.audio_files[random_audio_idx]
 
             # Read the audio now
-            rate, samples = wav.read(os.path.join(self.audio_path, randomAudioID + '.wav'))
+            audio_file_path = os.path.join(self.audio_path, randomAudioID + '.wav')
             time = (500 + (np.random.randint(self.fpv) * self.frame_sample_s * 1000 / self.fps)) / 1000.0
 
             # Get video ID
@@ -240,26 +377,25 @@ class AudioSetDatasetVal(Dataset):
         success, image = vidcap.read()
         # Some problem with image, return some random stuff
         if image is None:
-            ret_dict = {'image': torch.Tensor(np.random.rand(3, 224, 224)),
-                        'audio': torch.Tensor(np.random.rand(1, 257, 200)),
-                        'target': torch.LongTensor([2]), 'vidClasses': vidClasses}
+            ret_dict = {'image': torch.Tensor(np.random.rand(3, self.imgSize, self.imgSize)), 'audio': torch.Tensor(
+                np.random.rand(1, self.HS, self.WS)), 'target': torch.LongTensor([2])}
             return ret_dict
         ##############################
-        # Bring the channel to front
-        image = image.transpose(2, 0, 1)
-        image = self._vid_transform(torch.Tensor(image))
+        image = self._vid_transform(image)
         # select 1 sec
-        start = int(time * 48000) - 24000
-        end = int(time * 48000) + 24000
+        # audio = self._load_audio(audio_file_path, time)
+        # spectrogram, _ = self._stft(audio)
+        rate, samples = wav.read(audio_file_path)
+        start = int(time * self.audRate) - self.audLen // 2
+        end = int(time * self.audRate) + self.audLen // 2
         samples = samples[start:end]
-        samples = self._aud_transform(samples)
-        frequencies, times, spectrogram = signal.spectrogram(samples, self.config.data.sampleRate, nperseg=512,
-                                                             noverlap=274)
+        frequencies, times, spectrogram = signal.spectrogram(samples, self.audRate, nperseg=512, noverlap=274)
 
         # Remove bad examples
-        if spectrogram.shape != (257, 200):
-            return torch.Tensor(np.random.rand(3, 224, 224)), torch.Tensor(
-                np.random.rand(1, 257, 200)), torch.LongTensor([2])
+        if spectrogram.shape != (self.HS, self.WS):
+            ret_dict = {'image': torch.Tensor(np.random.rand(3, self.imgSize, self.imgSize)), 'audio': torch.Tensor(
+                np.random.rand(1, self.HS, self.WS)), 'target': torch.LongTensor([2])}
+            return ret_dict
 
         # Audio
         spectrogram = np.log(spectrogram + 1e-7)
@@ -267,7 +403,7 @@ class AudioSetDatasetVal(Dataset):
         spec_shape = tuple([1] + spec_shape)
 
         audio = torch.Tensor(spectrogram.reshape(spec_shape))
-        ret_dict = {'image': image, 'audio': audio, 'target': torch.LongTensor(result), 'vidClasses': vidClasses}
+        ret_dict = {'image': image, 'audio': audio, 'target': torch.LongTensor(result)}
         return ret_dict
 
 
@@ -286,6 +422,7 @@ class AudioSetDatasetTest(Dataset):
         with open(self.vid2genreFile, 'r') as fin:
             self.vid2genre = json.load(fin)
         self.audio_files = self.video_files = list(self.vid2genre.keys())
+        self.imgSize = self.config.data.imgSize
         self.fps = self.config.data.fps
         self.time = self.config.data.v_time
         # the origin code sample all the frames in one video, i.e. self.frame_sample_s = 1
@@ -296,6 +433,15 @@ class AudioSetDatasetTest(Dataset):
         self.tot_frames = len(self.vid2genre) * self.fpv
         self.length = self.tot_frames
 
+        # STFT params
+        self.audRate = self.config.data.audRate
+        self.audLen = self.config.data.audLen
+        self.audSec = 1. * self.audLen / self.audRate
+        self.stft_frame = self.config.data.stft_frame
+        self.stft_hop = self.config.data.stft_hop
+        self.HS = self.config.data.AudH
+        self.WS = self.config.data.AudW
+
         self._vid_transform = self.get_video_transform()
         self._aud_transform = self.get_audio_transform
 
@@ -303,12 +449,12 @@ class AudioSetDatasetTest(Dataset):
         transform_list = []
         mean = [0.485, 0.456, 0.406]
         std = [0.229, 0.224, 0.225]
+        transform_list.append(transforms.ToPILImage())
+        transform_list.append(transforms.Resize(self.config.data.imgSize, Image.BICUBIC))
+        transform_list.append(transforms.CenterCrop(self.config.data.imgSize))
 
-        transform_list.append(vtransforms.Resize(self.config.data.imgSize, Image.BICUBIC))
-        transform_list.append(vtransforms.CenterCrop(self.config.data.imgSize))
-
-        transform_list.append(vtransforms.ToTensor())
-        transform_list.append(vtransforms.Normalize(mean, std))
+        transform_list.append(transforms.ToTensor())
+        transform_list.append(transforms.Normalize(mean, std))
         vid_transform = transforms.Compose(transform_list)
         return vid_transform
 
@@ -324,12 +470,72 @@ class AudioSetDatasetTest(Dataset):
         # Consider all positive and negative examples
         return self.length
 
+    def _load_audio_file(self, path):
+        if path.endswith('.mp3'):
+            # audio_raw, rate = torchaudio.load(path)
+            # audio_raw = audio_raw.numpy().astype(np.float32)
+            #
+            # # range to [-1, 1]
+            # audio_raw *= (2.0 ** -31)
+            #
+            # # convert to mono
+            # if audio_raw.shape[1] == 2:
+            #     audio_raw = (audio_raw[:, 0] + audio_raw[:, 1]) / 2
+            # else:
+            #     audio_raw = audio_raw[:, 0]
+            audio_raw, rate = librosa.load(path, sr=None, mono=True)
+        else:
+            audio_raw, rate = librosa.load(path, sr=None, mono=True)
+
+        return audio_raw, rate
+
+    def _load_audio(self, path, center_timestamp, nearest_resample=False):
+        audio = np.zeros(self.audLen, dtype=np.float32)
+        # load audio
+        audio_raw, rate = self._load_audio_file(path)
+
+        # repeat if audio is too short
+        if audio_raw.shape[0] < rate * self.audSec:
+            n = int(rate * self.audSec / audio_raw.shape[0]) + 1
+            audio_raw = np.tile(audio_raw, n)
+
+        # resample
+        if rate > self.audRate:
+            # print('resmaple {}->{}'.format(rate, self.audRate))
+            if nearest_resample:
+                audio_raw = audio_raw[::rate // self.audRate]
+            else:
+                audio_raw = librosa.resample(audio_raw, rate, self.audRate)
+
+        # crop N seconds
+        len_raw = audio_raw.shape[0]
+        center = int(center_timestamp * self.audRate)
+        start = max(0, center - self.audLen // 2)
+        end = min(len_raw, center + self.audLen // 2)
+
+        audio[self.audLen // 2 - (center - start): self.audLen // 2 + (end - center)] = \
+            audio_raw[start:end]
+
+        # randomize volume
+        audio = self._aud_transform(audio)
+        audio[audio > 1.] = 1.
+        audio[audio < -1.] = -1.
+
+        return audio
+
+    def _stft(self, audio):
+        spec = librosa.stft(
+            audio, n_fft=self.stft_frame, hop_length=self.stft_hop)
+        amp = np.abs(spec)
+        phase = np.angle(spec)
+        return torch.from_numpy(amp), torch.from_numpy(phase)
+
     def __getitem__(self, idx):
         result = [0]
         video_idx = int(idx / self.fpv)
         video_frame_number = idx % self.fpv
         frame_time = 500 + (video_frame_number * 1000 * self.frame_sample_s / self.fps)
-        rate, samples = wav.read(os.path.join(self.audio_path, self.audio_files[video_idx] + '.wav'))
+        audio_file_path = os.path.join(self.audio_path, self.audio_files[video_idx] + '.wav')
         # Extract relevant audio file
         time = frame_time / 1000.0
         # Get video ID
@@ -343,26 +549,25 @@ class AudioSetDatasetTest(Dataset):
         success, image = vidcap.read()
         # Some problem with image, return some random stuff
         if image is None:
-            ret_dict = {'image': torch.Tensor(np.random.rand(3, 224, 224)),
-                        'audio': torch.Tensor(np.random.rand(1, 257, 200)),
-                        'target': torch.LongTensor([2]), 'vidClasses': vidClasses}
+            ret_dict = {'image': torch.Tensor(np.random.rand(3, self.imgSize, self.imgSize)), 'audio': torch.Tensor(
+                np.random.rand(1, self.HS, self.WS)), 'target': torch.LongTensor([2]), 'vidClasses': vidClasses}
             return ret_dict
         ##############################
-        # Bring the channel to front
-        image = image.transpose(2, 0, 1)
-        image = self._vid_transform(torch.Tensor(image))
+        image = self._vid_transform(image)
         # select 1 sec
-        start = int(time * 48000) - 24000
-        end = int(time * 48000) + 24000
+        # audio = self._load_audio(audio_file_path, time)
+        # spectrogram, _ = self._stft(audio)
+        rate, samples = wav.read(audio_file_path)
+        start = int(time * self.audRate) - self.audLen // 2
+        end = int(time * self.audRate) + self.audLen // 2
         samples = samples[start:end]
-        samples = self._aud_transform(samples)
-        frequencies, times, spectrogram = signal.spectrogram(samples, self.config.data.sampleRate, nperseg=512,
-                                                             noverlap=274)
+        frequencies, times, spectrogram = signal.spectrogram(samples, self.audRate, nperseg=512, noverlap=274)
 
         # Remove bad examples
-        if spectrogram.shape != (257, 200):
-            return torch.Tensor(np.random.rand(3, 224, 224)), torch.Tensor(
-                np.random.rand(1, 257, 200)), torch.LongTensor([2])
+        if spectrogram.shape != (self.HS, self.WS):
+            ret_dict = {'image': torch.Tensor(np.random.rand(3, self.imgSize, self.imgSize)), 'audio': torch.Tensor(
+                np.random.rand(1, self.HS, self.WS)), 'target': torch.LongTensor([2])}
+            return ret_dict
 
         # Audio
         spectrogram = np.log(spectrogram + 1e-7)

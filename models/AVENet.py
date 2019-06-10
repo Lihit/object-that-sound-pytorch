@@ -4,6 +4,12 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
+class Flatten(nn.Module):
+    def __init__(self):
+        super(Flatten, self).__init__()
+
+    def forward(self, x):
+        return x.view(x.size(0), -1)
 
 class AVENet(nn.Module):
     """
@@ -16,6 +22,7 @@ class AVENet(nn.Module):
         self.relu = F.relu
         self.imgnet = ImageConvNet()
         self.audnet = AudioConvNet()
+        self.flatten = Flatten()
 
         # Vision subnetwork
         # add by wenshao, maybe the globalaveragepool/globalmaxpool will be flexible?
@@ -35,7 +42,6 @@ class AVENet(nn.Module):
         # Combining layers
         self.eucdis = self.EucDistance
         self.fc3 = nn.Linear(1, 2)
-        self.softmax = F.softmax
 
         # need to initialize the tiny fc
         self.fc3.weight.data[0] = -0.7090
@@ -49,20 +55,22 @@ class AVENet(nn.Module):
         return x
 
     def EucDistance(self, x1, x2):
-        d = (x1 - x2).power(2).sum(dim=1, keepdim=True).sqrt()
+        d = (x1 - x2).pow(2).sum(dim=1, keepdim=True).sqrt()
         return d
 
     def forward(self, image, audio):
         # Image
         img = self.imgnet(image)
-        img = self.vpool4(img).squeeze(2).squeeze(2)
+        img = self.vpool4(img)
+        img = self.flatten(img)
         img = self.relu(self.vfc1(img))
         img = self.vfc2(img)
         img = self.vl2norm(img)
 
         # Audio
         aud = self.audnet(audio)
-        aud = self.apool4(aud).squeeze(2).squeeze(2)
+        aud = self.apool4(aud)
+        aud = self.flatten(aud)
         aud = self.relu(self.afc1(aud))
         aud = self.afc2(aud)
         aud = self.al2norm(aud)
@@ -70,14 +78,14 @@ class AVENet(nn.Module):
         # Join them
         mse = self.eucdis(img, aud)
         out = self.fc3(mse)
-        out = self.softmax(out, 1)
 
         return out, img, aud
 
     def get_image_embeddings(self, image):
         # Just get the image embeddings
         img = self.imgnet(image)
-        img = self.vpool4(img).squeeze(2).squeeze(2)
+        img = self.vpool4(img)
+        img = self.flatten(img)
         img = self.relu(self.vfc1(img))
         img = self.vfc2(img)
         img = self.vl2norm(img)
@@ -86,7 +94,8 @@ class AVENet(nn.Module):
     def get_audio_embeddings(self, audio):
         # Just get the audio embeddings
         aud = self.audnet(audio)
-        aud = self.apool4(aud).squeeze(2).squeeze(2)
+        aud = self.apool4(aud)
+        aud = self.flatten(aud)
         aud = self.relu(self.afc1(aud))
         aud = self.afc2(aud)
         aud = self.al2norm(aud)

@@ -47,7 +47,7 @@ def validation(model, dataloader, criterion):
         for b_idx, data_dict in enumerate(dataloader):
             image = data_dict['image']
             audio = data_dict['audio']
-            target = data_dict['target']
+            target = data_dict['target'].squeeze()
             # Filter the bad ones first
             idx = target != 2
             if idx.sum() == 0:
@@ -58,10 +58,10 @@ def validation(model, dataloader, criterion):
             target = Variable(target[idx]).cuda()
             out, _, _ = model(image, audio)
             loss = criterion(out, target)
-            val_loss.update(loss.data[0], image.size(0))
+            val_loss.update(loss.item(), image.size(0))
             # Calculate accuracy
             _, ind_max = out.max(1)
-            acc = (ind_max.data == out.data).sum() * 1.0 / image.size(0)
+            acc = (ind_max.data == target.data).sum().item() / image.size(0)
             val_acc.update(acc, image.size(0))
     return val_acc.avg, val_loss.avg
 
@@ -71,6 +71,7 @@ def train(model, traindataloader, valdataloader, criterion, optimizer, scheduler
     train_loss = utils.AverageMeter()
     train_acc = utils.AverageMeter()
     for epoch in range(config.train.epochs):
+        model.train()
         train_loss.reset()
         train_acc.reset()
         scheduler.step(epoch)
@@ -78,7 +79,7 @@ def train(model, traindataloader, valdataloader, criterion, optimizer, scheduler
             optimizer.zero_grad()
             image = data_dict['image']
             audio = data_dict['audio']
-            target = data_dict['target']
+            target = data_dict['target'].squeeze()
             # Filter the bad ones first
             idx = target != 2
             if idx.sum() == 0:
@@ -90,18 +91,18 @@ def train(model, traindataloader, valdataloader, criterion, optimizer, scheduler
 
             out, _, _ = model(image, audio)
             loss = criterion(out, target)
-            train_loss.update(loss.data[0], image.size(0))
+            train_loss.update(loss.item(), image.size(0))
             loss.backward()
             optimizer.step()
             # Calculate accuracy
             _, ind_max = out.max(1)
-            acc = (ind_max.data == out.data).sum() * 1.0 / image.size(0)
+            acc = (ind_max.data == target.data).sum().item() * 1.0 / image.size(0)
             train_acc.update(acc, image.size(0))
-        logging.info("epoch:%d\t, train accuracy:%0.3f\t, train loss:%0.3f" % (epoch, train_acc.avg, train_loss.avg))
+        logging.info("epoch:%d, train accuracy:%0.3f, train loss:%0.3f" % (epoch, train_acc.avg, train_loss.avg))
         if (epoch + 1) % config.train.val_epoch == 0:
             logging.info('start validation>>>')
             val_acc, val_loss = validation(model, valdataloader, criterion)
-            logging.info("epoch:%d\t, validation accuracy:%0.3f\t, validation loss:%0.3f" % (epoch, val_acc, val_loss))
+            logging.info("epoch:%d, validation accuracy:%0.3f, validation loss:%0.3f" % (epoch, val_acc, val_loss))
         if (epoch + 1) % config.train.model_save_epoch == 0:
             logging.info('saving model at %s' % os.path.join(exp_dir, 'model_epoch%d.pth' % epoch))
             torch.save(model.state_dict(), os.path.join(exp_dir, 'model_epoch%d.pth' % epoch))
@@ -116,7 +117,7 @@ def crossModalRetrieval(model, testdataloader, mode1="img", mode2="aud", topk_li
     for b_idx, data_dict in enumerate(testdataloader):
         image = data_dict['image']
         audio = data_dict['audio']
-        target = data_dict['target']
+        target = data_dict['target'].squeeze()
         vidClasses = data_dict['vidClasses']  # vidClasses is used for the nDCG metrics
         # Filter the bad ones first
         idx = target != 2
@@ -171,4 +172,4 @@ if __name__ == "__main__":
         train(model, traindataloader, valdataloader, criterion, optimizer, scheduler)
 
     # retrieval test
-    crossModalRetrieval(model, testdataloader, mode1="img", mode2="aud", topk=5)
+    crossModalRetrieval(model, testdataloader, mode1="img", mode2="aud", topk_list=[5])

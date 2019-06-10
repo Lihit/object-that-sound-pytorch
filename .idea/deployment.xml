@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PublishConfigData">
+  <component name="PublishConfigData" autoUpload="Always" serverName="wenshaoguo@10.112.58.137:22">
     <serverData>
       <paths name="shaoguo.wen@yz-gpu021.hogpu.cc:22">
         <serverdata>
@@ -33,7 +33,7 @@
       <paths name="wenshaoguo@10.112.58.137:22">
         <serverdata>
           <mappings>
-            <mapping local="$PROJECT_DIR$" web="/" />
+            <mapping deploy="/home/wenshaoguo/object-that-sound-pytorch" local="$PROJECT_DIR$" web="/" />
           </mappings>
         </serverdata>
       </paths>
@@ -66,5 +66,6 @@
         </serverdata>
       </paths>
     </serverData>
+    <option name="myAutoUpload" value="ALWAYS" />
   </component>
 </project>
