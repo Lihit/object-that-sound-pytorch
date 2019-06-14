@@ -79,6 +79,33 @@ def time_to_str(t, mode='min'):
         raise NotImplementedError
 
 
+def dcg_score(anchor_classes, retrieve_classes_list, mat_rel, genre_rel):
+    y_true = []
+    for item_list in retrieve_classes_list:
+        tmp = []
+        for anchor_classes_i in anchor_classes:
+            i = genre_rel.index(anchor_classes_i)
+            for item_list_j in item_list:
+                j = genre_rel.index(item_list_j)
+                tmp.append(mat_rel[i, j])
+        y_true.append(max(tmp))
+    y_true = np.array(y_true)
+    y_true_sort = np.sort(y_true)[::-1]
+    s1 = np.sum((2 ** y_true - 1) / (np.log2(np.arange(len(y_true)) + 2)))
+    s2 = np.sum((2 ** y_true_sort - 1) / (np.log2(np.arange(len(y_true_sort)) + 2)))  # norm
+    return s1 / s2
+
+
+def nDCG_k(anchor_feats, positive_feats, anchor_classes, k, mat_rel, genre_rel):
+    nDCG_k_ret = dict()
+    for i in range(anchor_feats.shape[0]):
+        feats_sub = np.sum(np.square(anchor_feats[i, :] - positive_feats), axis=1)
+        topk_list = np.argsort(feats_sub)[:k]
+        nDCG_k_ret[tuple(anchor_classes[i])] = [anchor_classes[j] for j in topk_list]
+    nDCG_k_score = [dcg_score(key, nDCG_k_ret[key], mat_rel, genre_rel) for key in nDCG_k_ret]
+    return np.mean(nDCG_k_score)
+
+
 def top_k(anchor_feats, positive_feats, k_list):
     topk_acc_ret = defaultdict(list)
     for i in range(anchor_feats.shape[0]):
@@ -103,3 +130,29 @@ def top_k_percent(test_df, anchor_feats, positive_feats, k_list):
     topk_acc_ret = {key: np.mean(topk_acc_ret[key]) for key in topk_acc_ret}
     return topk_acc_ret
 
+
+def StringEditDistance(word1, word2):
+    """
+    :type word1: str
+    :type word2: str
+    :rtype: int
+    """
+    m = len(word1)
+    n = len(word2)
+    dp = [[0 for __ in range(m + 1)] for __ in range(n + 1)]
+    for j in range(m + 1):
+        dp[0][j] = j
+    for i in range(n + 1):
+        dp[i][0] = i
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            onemore = 1 if word1[j - 1] != word2[i - 1] else 0
+            dp[i][j] = min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + onemore)
+    return dp[n][m]
+
+
+if __name__ == '__main__':
+    word1 = "acoustic guitar"
+    word2 = "drums"
+    ret = StringEditDistance(word1, word2)
+    print(ret)

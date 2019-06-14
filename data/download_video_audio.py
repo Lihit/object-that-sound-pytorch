@@ -5,6 +5,7 @@ import subprocess
 import os
 import shutil
 import multiprocessing
+import argparse
 
 
 def download_vid(line, train_data_dir):
@@ -56,7 +57,7 @@ def downloadAllVideos(train_csv_path, train_data_dir):
     vid2genre = {}
     with open(train_csv_path, 'r') as fin:
         lines = [line for line in fin.readlines() if not line.startswith('#')]
-
+    print('start downloading %d videos' % len(lines))
     # use multiprocessing pool
     pool = multiprocessing.Pool(16)
     for i, line in enumerate(lines):
@@ -73,13 +74,24 @@ def downloadAllVideos(train_csv_path, train_data_dir):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--data_dir', default='./data_all',
+                        help="data dir which you want to save")
+    parser.add_argument('--train_csv_path', default='./data_infos/unbalanced_train_segments_filtered.csv',
+                        help="train csv file which you want to download")
+    parser.add_argument('--val_csv_path', default='./data_infos/eval_segments_filtered.csv',
+                        help="val csv file which you want to download")
+    parser.add_argument('--num_workers', type=int, default=16,
+                        help="number worker to download")
+    args = parser.parse_args()
     # download all video first, without any preprocessing
     # path to save all the data
-    all_data_dir = './data_all'
+    all_data_dir = args.data_dir
     if not os.path.exists(all_data_dir):
         os.makedirs(all_data_dir)
+
     # download the train data
-    train_csv_path = './data_infos/balanced_train_segments.csv'
+    train_csv_path = args.train_csv_path
     train_data_dir = os.path.join(all_data_dir, 'train')
     if not os.path.exists(train_data_dir):
         os.makedirs(train_data_dir)
@@ -93,7 +105,7 @@ if __name__ == "__main__":
         json.dump(train_vid2genre, fin)
 
     # download the val data
-    val_csv_path = './data_infos/eval_segments.csv'
+    val_csv_path = args.val_csv_path
     val_data_dir = os.path.join(all_data_dir, 'val')
     if not os.path.exists(val_data_dir):
         os.makedirs(val_data_dir)

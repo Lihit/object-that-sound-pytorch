@@ -29,13 +29,14 @@ config.data.AudW = 200
 # add train config
 config.train = edict()
 config.train.pretrained_model = ""
-config.train.num_workers = 16
-config.train.lr = 0.001
+config.train.num_workers = 8
+config.train.lr = 0.0001
 config.train.weight_decay = 5e-04
 config.train.epochs = 200
 config.train.val_epoch = 10
 config.train.model_save_epoch = 10
 config.train.is_train = True
+config.train.is_val = False
 
 # add visualize config
 config.vis = edict()

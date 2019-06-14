@@ -111,14 +111,24 @@ def train(model, traindataloader, valdataloader, criterion, optimizer, scheduler
 
 
 def crossModalRetrieval(model, testdataloader, mode1="img", mode2="aud", topk_list=[5]):
+    with open('./data/data_infos/genre_relevance.csv', 'r') as fin:
+        line = fin.readline()
+        genre_rel = [i for i in line.replace('\n', '').split(',')]
+        mat_rel = np.zeros(shape=(len(genre_rel), len(genre_rel)))
+        for i, line in enumerate(fin.readlines()):
+            for j, val in enumerate(line.replace('\n', '').split(',')):
+                mat_rel[i][j] = int(val)
+
     assert (mode1 != mode2)
     anchor_feats = []
     positive_feats = []
+    anchor_classes = []
     for b_idx, data_dict in enumerate(testdataloader):
         image = data_dict['image']
         audio = data_dict['audio']
         target = data_dict['target'].squeeze()
         vidClasses = data_dict['vidClasses']  # vidClasses is used for the nDCG metrics
+        anchor_classes.append(vidClasses)
         # Filter the bad ones first
         idx = target != 2
         if idx.sum() == 0:
@@ -134,9 +144,16 @@ def crossModalRetrieval(model, testdataloader, mode1="img", mode2="aud", topk_li
         positive_feats.append(aud_emb.cpu().data.numpy())
     anchor_feats = np.concatenate(anchor_feats, 0)
     positive_feats = np.concatenate(positive_feats, 0)
-    topk_acc_ret = utils.top_k(anchor_feats, positive_feats, topk_list)
-    for key in topk_acc_ret:
-        logging.info("%s:%0.3f" % (key, topk_acc_ret[key]))
+
+    # topk metrics
+    # topk_acc_ret = utils.top_k(anchor_feats, positive_feats, topk_list)
+    # for key in topk_acc_ret:
+    #     logging.info("%s:%0.3f" % (key, topk_acc_ret[key]))
+
+    # nDCG metrics
+    k = 30
+    nDCG_score = utils.nDCG_k(anchor_feats, positive_feats, anchor_classes, k, mat_rel, genre_rel)
+    logging.info("score of nDCG@%d in test set is: %0.2f" % (k, nDCG_score))
 
 
 if __name__ == "__main__":
@@ -171,6 +188,10 @@ if __name__ == "__main__":
     # train and validation model
     if config.train.is_train:
         train(model, traindataloader, valdataloader, criterion, optimizer, scheduler)
+
+    # validation model
+    if config.train.is_val:
+        validation(model, valdataloader, criterion)
 
     # retrieval test
     crossModalRetrieval(model, testdataloader, mode1="img", mode2="aud", topk_list=[5])
